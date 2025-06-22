@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -32,6 +32,38 @@ export default function SearchPage() {
   const [profileUrl, setProfileUrl] = useState("")
   const [error, setError] = useState<string | null>(null)
 
+  // Load saved state from localStorage on component mount
+  useEffect(() => {
+    try {
+      const savedQuery = localStorage.getItem('churros_search_query')
+      const savedCandidates = localStorage.getItem('churros_candidates')
+      const savedTab = localStorage.getItem('churros_active_tab')
+      
+      if (savedQuery) {
+        setSearchQuery(savedQuery)
+      }
+      if (savedCandidates) {
+        setCandidates(JSON.parse(savedCandidates))
+      }
+      if (savedTab) {
+        setActiveTab(savedTab)
+      }
+    } catch (error) {
+      console.error('Error loading saved state:', error)
+    }
+  }, [])
+
+  // Save state to localStorage whenever it changes
+  useEffect(() => {
+    try {
+      localStorage.setItem('churros_search_query', searchQuery)
+      localStorage.setItem('churros_candidates', JSON.stringify(candidates))
+      localStorage.setItem('churros_active_tab', activeTab)
+    } catch (error) {
+      console.error('Error saving state:', error)
+    }
+  }, [searchQuery, candidates, activeTab])
+
   // Convert Profile to Candidate format for backward compatibility
   const convertProfileToCandidate = (profile: Profile): Candidate => {
     return {
@@ -58,6 +90,13 @@ export default function SearchPage() {
     setIsSearching(true)
     setError(null)
     setCandidates([]) // Clear previous results
+
+    // Clear localStorage for new search
+    try {
+      localStorage.removeItem('churros_candidates')
+    } catch (error) {
+      console.error('Error clearing localStorage:', error)
+    }
 
     try {
       const response = await fetch('/api/generate-leads', {
@@ -95,11 +134,29 @@ export default function SearchPage() {
     }
   }
 
+  // Function to clear all saved state
+  const clearSavedState = () => {
+    try {
+      localStorage.removeItem('churros_search_query')
+      localStorage.removeItem('churros_candidates')
+      localStorage.removeItem('churros_active_tab')
+    } catch (error) {
+      console.error('Error clearing saved state:', error)
+    }
+  }
+
   const handleTrackProfile = async () => {
     if (!profileUrl.trim()) return
 
     setIsSearching(true)
     setError(null)
+
+    // Clear localStorage for new profile tracking
+    try {
+      localStorage.removeItem('churros_candidates')
+    } catch (error) {
+      console.error('Error clearing localStorage:', error)
+    }
 
     try {
       // Extract username from URL
@@ -319,9 +376,23 @@ export default function SearchPage() {
             <div className="space-y-6">
               <div className="flex items-center justify-between">
                 <h2 className="text-xl font-bold text-[#242424]">Found {candidates.length} potential matches</h2>
-                <Badge variant="outline" className="text-[#E0531F] border-[#E0531F]">
-                  Sorted by fit
-                </Badge>
+                <div className="flex items-center space-x-3">
+                  <Badge variant="outline" className="text-[#E0531F] border-[#E0531F]">
+                    Sorted by fit
+                  </Badge>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setCandidates([])
+                      setSearchQuery("")
+                      clearSavedState()
+                    }}
+                    className="text-gray-600 hover:text-gray-800"
+                  >
+                    Clear Results
+                  </Button>
+                </div>
               </div>
 
               <div className="grid gap-6">
