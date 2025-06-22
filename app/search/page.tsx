@@ -72,7 +72,14 @@ export default function SearchPage() {
       })
 
       if (!response.ok) {
-        throw new Error('Failed to generate leads')
+        const errorData = await response.json().catch(() => ({}));
+        if (response.status === 429) {
+          throw new Error('Rate limit exceeded. Please wait a moment and try again.');
+        } else if (errorData.error) {
+          throw new Error(errorData.error);
+        } else {
+          throw new Error(`Failed to generate leads (${response.status})`);
+        }
       }
 
       const data = await response.json()
@@ -81,7 +88,7 @@ export default function SearchPage() {
 
     } catch (error) {
       console.error('Error generating leads:', error)
-      setError('Failed to generate leads. Please try again.')
+      setError(error instanceof Error ? error.message : 'Failed to generate leads. Please try again.')
       setCandidates([]) // Clear candidates on error
     } finally {
       setIsSearching(false)
@@ -109,7 +116,14 @@ export default function SearchPage() {
       })
 
       if (!response.ok) {
-        throw new Error('Failed to analyze profile')
+        const errorData = await response.json().catch(() => ({}));
+        if (response.status === 429) {
+          throw new Error('Rate limit exceeded. Please wait a moment and try again.');
+        } else if (errorData.error) {
+          throw new Error(errorData.error);
+        } else {
+          throw new Error(`Failed to analyze profile (${response.status})`);
+        }
       }
 
       const data = await response.json()
@@ -123,7 +137,7 @@ export default function SearchPage() {
 
     } catch (error) {
       console.error('Error tracking profile:', error)
-      setError('Failed to track profile. Please try again.')
+      setError(error instanceof Error ? error.message : 'Failed to track profile. Please try again.')
     } finally {
       setIsSearching(false)
     }

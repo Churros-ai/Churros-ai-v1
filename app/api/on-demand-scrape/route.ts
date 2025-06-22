@@ -189,15 +189,21 @@ async function scrapeGitHubWithAPI(query: string, limit: number): Promise<Profil
   const githubToken = process.env.GITHUB_TOKEN;
   
   // Use enhanced NLP parser
-  const { searchQuery, filters } = parseGitHubQuery(query);
-  let githubQuery = searchQuery;
+  const { searchQuery, filters, sortBy } = parseGitHubQuery(query);
   
-  // Add filters to the query
+  // Build the final GitHub API query
+  let githubQuery = '';
+  
   if (filters.length > 0) {
-    githubQuery += ' ' + filters.join(' ');
+    // Use filters as the main query (they include the search terms)
+    githubQuery = filters.join(' ');
+  } else {
+    // Fallback to search query if no filters
+    githubQuery = searchQuery;
   }
   
   console.log(`[DEBUG] Final GitHub API query: '${githubQuery}'`);
+  console.log(`[DEBUG] Sort by: ${sortBy}`);
   
   try {
     const headers: Record<string, string> = {
@@ -209,10 +215,11 @@ async function scrapeGitHubWithAPI(query: string, limit: number): Promise<Profil
       headers['Authorization'] = `token ${githubToken}`;
     }
     
-    const response = await fetch(
-      `https://api.github.com/search/users?q=${encodeURIComponent(githubQuery)}&per_page=${limit * 2}`,
-      { headers }
-    );
+    // Build URL with sort parameter
+    const url = `https://api.github.com/search/users?q=${encodeURIComponent(githubQuery)}&sort=${sortBy}&order=desc&per_page=${limit * 2}`;
+    console.log(`[DEBUG] GitHub API URL: ${url}`);
+    
+    const response = await fetch(url, { headers });
     
     if (!response.ok) {
       console.error(`[DEBUG] GitHub API error: ${response.status} ${response.statusText}`);
@@ -602,20 +609,21 @@ function extractTags(text: string): string[] {
 }
 
 /**
- * Enhanced GitHub query parser with robust NLP
+ * Robust GitHub query parser that handles complex natural language
  */
-function parseGitHubQuery(prompt: string): { searchQuery: string, filters: string[] } {
+function parseGitHubQuery(prompt: string): { searchQuery: string, filters: string[], sortBy: string } {
   const queryLower = prompt.toLowerCase();
   
   console.log('[DEBUG] Parsing GitHub query:', prompt);
   
-  // Role detection
+  // Comprehensive role/skill detection
   const roles = [
     'designer', 'developer', 'engineer', 'manager', 'lead', 'architect', 
     'artist', 'writer', 'founder', 'maker', 'builder', 'hacker', 'coder', 
     'programmer', 'consultant', 'specialist', 'expert', 'professional',
     'frontend', 'backend', 'fullstack', 'ui', 'ux', 'product', 'data',
-    'devops', 'mobile', 'web', 'software', 'systems', 'cloud'
+    'devops', 'mobile', 'web', 'software', 'systems', 'cloud', 'ai', 'ml',
+    'machine learning', 'data science', 'analyst', 'scientist'
   ];
   
   // Activity indicators
@@ -631,65 +639,77 @@ function parseGitHubQuery(prompt: string): { searchQuery: string, filters: strin
     'advanced', 'intermediate', 'veteran', 'seasoned', 'new', 'fresh'
   ];
   
+  // Extract all relevant keywords (don't strip them!)
+  const detectedKeywords: string[] = [];
+  
   // Extract roles
-  const detectedRoles: string[] = [];
   for (const role of roles) {
     if (queryLower.includes(role)) {
-      detectedRoles.push(role);
+      detectedKeywords.push(role);
     }
+  }
+  
+  // Extract experience level
+  const experienceLevel = experienceKeywords.find(keyword => queryLower.includes(keyword)) || '';
+  if (experienceLevel) {
+    detectedKeywords.push(experienceLevel);
   }
   
   // Check for activity
   const hasActivity = activityKeywords.some(keyword => queryLower.includes(keyword));
   
-  // Check for experience level
-  const experienceLevel = experienceKeywords.find(keyword => queryLower.includes(keyword)) || '';
+  console.log('[DEBUG] Detected keywords:', detectedKeywords);
+  console.log('[DEBUG] Has activity:', hasActivity);
   
-  // Build search query
-  let searchQuery = prompt;
+  // Build search query - KEEP ALL RELEVANT KEYWORDS
+  let searchQuery = '';
   
-  // Remove platform and filler words
-  const wordsToRemove = [
-    'github', 'git', 'repo', 'repository', 'code', 'developer', 'programmer', 'coding',
-    'with', 'who', 'that', 'have', 'has', 'are', 'is', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'by'
-  ];
-  
-  for (const word of wordsToRemove) {
-    searchQuery = searchQuery.replace(new RegExp(`\\b${word}\\b`, 'gi'), '').trim();
+  if (detectedKeywords.length > 0) {
+    // Use all detected keywords
+    searchQuery = detectedKeywords.join(' ');
+  } else {
+    // If no keywords detected, extract meaningful words from the prompt
+    const words = prompt.toLowerCase().split(/\s+/);
+    const meaningfulWords = words.filter(word => 
+      word.length > 2 && 
+      !['with', 'who', 'that', 'have', 'has', 'are', 'is', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'by', 'github', 'git'].includes(word)
+    );
+    searchQuery = meaningfulWords.join(' ');
   }
   
-  // Clean up extra spaces
-  searchQuery = searchQuery.replace(/\s+/g, ' ').trim();
-  
-  // If search query is empty, use the first detected role
-  if (!searchQuery && detectedRoles.length > 0) {
-    searchQuery = detectedRoles[0];
-  }
-  
-  // If still empty, use a generic term
-  if (!searchQuery) {
+  // If still empty, use a fallback
+  if (!searchQuery.trim()) {
     searchQuery = 'developer';
-  }
-  
-  // Add experience level if detected
-  if (experienceLevel && !searchQuery.includes(experienceLevel)) {
-    searchQuery = `${experienceLevel} ${searchQuery}`.trim();
   }
   
   // Build GitHub API filters
   const filters: string[] = [];
+  let sortBy = 'followers'; // Default sort
   
-  // Add activity filter if requested
+  // Add activity filters if requested
   if (hasActivity) {
     filters.push('repos:>1');
+    filters.push('followers:>10');
+    sortBy = 'repositories'; // Sort by repository count for active users
   }
   
   // Add experience-based filters
   if (experienceLevel === 'senior' || experienceLevel === 'experienced' || experienceLevel === 'expert') {
     filters.push('repos:>5');
+    filters.push('followers:>50');
   }
   
-  console.log('[DEBUG] GitHub query result:', { searchQuery, filters });
+  // Add bio search to focus on relevant profiles
+  if (searchQuery) {
+    filters.push(`in:bio ${searchQuery}`);
+  }
   
-  return { searchQuery, filters };
+  console.log('[DEBUG] Final GitHub query:', { 
+    searchQuery, 
+    filters, 
+    sortBy,
+    finalQuery: filters.join(' ')
+  });
+  
+  return { searchQuery, filters, sortBy };
 } 

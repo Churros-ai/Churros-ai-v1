@@ -5,7 +5,7 @@ const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
 
 const RATE_LIMIT = {
   windowMs: 60 * 1000, // 1 minute
-  maxRequests: 5 // 5 requests per minute
+  maxRequests: 20 // 20 requests per minute (increased for testing)
 };
 
 export function middleware(request: NextRequest) {
