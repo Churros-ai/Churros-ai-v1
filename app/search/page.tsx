@@ -102,15 +102,52 @@ export default function SearchPage() {
     setError(null)
 
     try {
-      // Call the on-demand scrape API to analyze the profile
+      // Extract username from URL
+      let username = '';
+      let platform = 'github';
+      
+      if (profileUrl.includes('github.com/')) {
+        // Extract username from GitHub URL
+        const match = profileUrl.match(/github\.com\/([^\/\?]+)/);
+        if (match) {
+          username = match[1];
+          platform = 'github';
+        } else {
+          throw new Error('Invalid GitHub URL format. Please use: https://github.com/username');
+        }
+      } else if (profileUrl.includes('linkedin.com/in/')) {
+        // Extract username from LinkedIn URL
+        const match = profileUrl.match(/linkedin\.com\/in\/([^\/\?]+)/);
+        if (match) {
+          username = match[1];
+          platform = 'linkedin';
+        } else {
+          throw new Error('Invalid LinkedIn URL format. Please use: https://linkedin.com/in/username');
+        }
+      } else if (profileUrl.includes('twitter.com/') || profileUrl.includes('x.com/')) {
+        // Extract username from Twitter URL
+        const match = profileUrl.match(/(?:twitter\.com|x\.com)\/([^\/\?]+)/);
+        if (match) {
+          username = match[1];
+          platform = 'twitter';
+        } else {
+          throw new Error('Invalid Twitter URL format. Please use: https://twitter.com/username');
+        }
+      } else {
+        throw new Error('Unsupported platform. Please use GitHub, LinkedIn, or Twitter URLs.');
+      }
+
+      console.log(`[DEBUG] Extracted username: ${username} from platform: ${platform}`);
+
+      // Call the on-demand scrape API with the username
       const response = await fetch('/api/on-demand-scrape', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          query: profileUrl,
-          platform: profileUrl.includes('github') ? 'github' : 'linkedin',
+          query: username, // Use the username as the query
+          platform: platform,
           limit: 1
         })
       })
@@ -132,7 +169,7 @@ export default function SearchPage() {
         setCandidates([candidate, ...candidates])
         setProfileUrl("")
       } else {
-        setError('No profile found at that URL')
+        setError(`No profile found for ${username} on ${platform}`)
       }
 
     } catch (error) {
@@ -264,7 +301,7 @@ export default function SearchPage() {
                       disabled={isSearching || !profileUrl.trim()}
                       className="bg-[#E0531F] hover:bg-[#E0531F]/90 text-white font-medium"
                     >
-                      {isSearching ? "Analyzing..." : "Track"}
+                      {isSearching ? "Analyzing..." : "Analyze"}
                     </Button>
                   </div>
                 </CardContent>
