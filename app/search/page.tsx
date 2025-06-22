@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Search, Sparkles, Github, Twitter, Linkedin, ExternalLink, Users, LinkIcon } from "lucide-react"
+import { Profile } from "@/lib/types"
 
 interface Candidate {
   id: string
@@ -29,69 +30,103 @@ export default function SearchPage() {
   const [isSearching, setIsSearching] = useState(false)
   const [activeTab, setActiveTab] = useState("search")
   const [profileUrl, setProfileUrl] = useState("")
+  const [error, setError] = useState<string | null>(null)
 
-  // Mock candidates data
-  const mockCandidates: Candidate[] = [
-    {
-      id: "1",
-      name: "Alex Chen",
-      title: "Full-stack Engineer",
-      summary:
-        "Building open-source dev tools and writing about the future of AI. Previously at early-stage YC startup.",
-      alignment:
-        'Perfect match for your "chaotic genius" vibe—ships fast, iterates quickly, and loves building in public.',
+  // Convert Profile to Candidate format for backward compatibility
+  const convertProfileToCandidate = (profile: Profile): Candidate => {
+    return {
+      id: profile.id,
+      name: profile.name,
+      title: `${profile.platform} ${profile.platform === 'github' ? 'Developer' : 'User'}`,
+      summary: profile.bio || `Active ${profile.platform} user`,
+      alignment: profile.fit_summary || `Good match based on ${profile.platform} activity`,
       proofs: [
-        { type: "github", content: "47 commits this week on AI tooling project", url: "#" },
-        { type: "twitter", content: "Thread about LLM optimization got 2.3k likes", url: "#" },
-        { type: "linkedin", content: "Just left Series A startup to explore AI space", url: "#" },
+        {
+          type: profile.platform as "github" | "twitter" | "linkedin",
+          content: `Active on ${profile.platform}`,
+          url: profile.profile_url || "#"
+        }
       ],
-      matchScore: 94,
-    },
-    {
-      id: "2",
-      name: "Sarah Kim",
-      title: "Product Designer",
-      summary:
-        "Design systems expert who codes her own prototypes. Active in design Twitter and open-source community.",
-      alignment:
-        'Matches your "move fast" values—designs with code, ships prototypes, and believes in iteration over perfection.',
-      proofs: [
-        { type: "github", content: "Maintains popular React component library", url: "#" },
-        { type: "twitter", content: "Regular posts about design-dev collaboration", url: "#" },
-        { type: "linkedin", content: "Led design at 3 early-stage startups", url: "#" },
-      ],
-      matchScore: 89,
-      isPremium: true,
-    },
-  ]
+      matchScore: Math.round(profile.score * 100),
+      isPremium: profile.score > 0.8
+    }
+  }
 
   const handleSearch = async () => {
     if (!searchQuery.trim()) return
 
     setIsSearching(true)
-    // Simulate API call
-    setTimeout(() => {
-      setCandidates(mockCandidates)
+    setError(null)
+    setCandidates([]) // Clear previous results
+
+    try {
+      const response = await fetch('/api/generate-leads', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          companyDNA: searchQuery.trim(),
+          limit: 10
+        })
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to generate leads')
+      }
+
+      const data = await response.json()
+      const convertedCandidates = (data.leads || []).map(convertProfileToCandidate)
+      setCandidates(convertedCandidates)
+
+    } catch (error) {
+      console.error('Error generating leads:', error)
+      setError('Failed to generate leads. Please try again.')
+      setCandidates([]) // Clear candidates on error
+    } finally {
       setIsSearching(false)
-    }, 1500)
+    }
   }
 
   const handleTrackProfile = async () => {
     if (!profileUrl.trim()) return
 
-    // Simulate profile analysis
-    const mockProfile = {
-      id: "3",
-      name: "Jordan Taylor",
-      title: "Backend Engineer",
-      summary: "Extracted from their GitHub and LinkedIn activity",
-      alignment: "Strong technical skills and startup experience align with your company DNA.",
-      proofs: [{ type: "github", content: "Active contributor to distributed systems projects", url: profileUrl }],
-      matchScore: 87,
-    }
+    setIsSearching(true)
+    setError(null)
 
-    setCandidates([mockProfile, ...candidates])
-    setProfileUrl("")
+    try {
+      // Call the on-demand scrape API to analyze the profile
+      const response = await fetch('/api/on-demand-scrape', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          query: profileUrl,
+          platform: profileUrl.includes('github') ? 'github' : 'linkedin',
+          limit: 1
+        })
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to analyze profile')
+      }
+
+      const data = await response.json()
+      if (data.profiles && data.profiles.length > 0) {
+        const candidate = convertProfileToCandidate(data.profiles[0])
+        setCandidates([candidate, ...candidates])
+        setProfileUrl("")
+      } else {
+        setError('No profile found at that URL')
+      }
+
+    } catch (error) {
+      console.error('Error tracking profile:', error)
+      setError('Failed to track profile. Please try again.')
+    } finally {
+      setIsSearching(false)
+    }
   }
 
   const getProofIcon = (type: string) => {
@@ -164,13 +199,25 @@ export default function SearchPage() {
                         className="text-lg h-16 border-gray-200 focus:border-[#E0531F] focus:ring-[#E0531F]"
                       />
                       <div className="flex flex-wrap gap-2 mt-3">
-                        <Badge variant="outline" className="text-xs cursor-pointer hover:border-[#E0531F]">
+                        <Badge 
+                          variant="outline" 
+                          className="text-xs cursor-pointer hover:border-[#E0531F]"
+                          onClick={() => setSearchQuery("designers who build in public")}
+                        >
                           Frontend engineers who tweet
                         </Badge>
-                        <Badge variant="outline" className="text-xs cursor-pointer hover:border-[#E0531F]">
+                        <Badge 
+                          variant="outline" 
+                          className="text-xs cursor-pointer hover:border-[#E0531F]"
+                          onClick={() => setSearchQuery("designers with GitHub activity")}
+                        >
                           Designers with GitHub activity
                         </Badge>
-                        <Badge variant="outline" className="text-xs cursor-pointer hover:border-[#E0531F]">
+                        <Badge 
+                          variant="outline" 
+                          className="text-xs cursor-pointer hover:border-[#E0531F]"
+                          onClick={() => setSearchQuery("AI researchers building products")}
+                        >
                           AI researchers building products
                         </Badge>
                       </div>
@@ -200,10 +247,10 @@ export default function SearchPage() {
                     />
                     <Button
                       onClick={handleTrackProfile}
-                      disabled={!profileUrl.trim()}
+                      disabled={isSearching || !profileUrl.trim()}
                       className="bg-[#E0531F] hover:bg-[#E0531F]/90 text-white font-medium"
                     >
-                      Analyze
+                      {isSearching ? "Analyzing..." : "Track"}
                     </Button>
                   </div>
                 </CardContent>
@@ -211,7 +258,12 @@ export default function SearchPage() {
             </TabsContent>
           </Tabs>
 
-          {/* Results */}
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+              <p className="text-red-600 text-sm">{error}</p>
+            </div>
+          )}
+
           {candidates.length > 0 && (
             <div className="space-y-6">
               <div className="flex items-center justify-between">
@@ -262,6 +314,7 @@ export default function SearchPage() {
                               variant="ghost"
                               size="sm"
                               className="h-auto p-0 text-[#E0531F] hover:text-[#E0531F]/80"
+                              onClick={() => window.open(proof.url, '_blank')}
                             >
                               <ExternalLink className="w-3 h-3" />
                             </Button>
@@ -288,15 +341,6 @@ export default function SearchPage() {
                     </CardContent>
                   </Card>
                 ))}
-              </div>
-            </div>
-          )}
-
-          {isSearching && (
-            <div className="text-center py-12">
-              <div className="inline-flex items-center space-x-2 text-[#E0531F]">
-                <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-[#E0531F]"></div>
-                <span className="font-medium">Finding your perfect matches...</span>
               </div>
             </div>
           )}
