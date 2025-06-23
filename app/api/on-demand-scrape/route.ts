@@ -50,9 +50,23 @@ export async function POST(request: NextRequest) {
 
   } catch (error) {
     console.error('[CRITICAL] ON-DEMAND SCRAPE FAILED:', JSON.stringify(error, null, 2));
+    
+    // Check if it's a GitHub authentication error
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    const isGitHubAuthError = errorMessage.includes('GitHub API Unauthorized') || errorMessage.includes('Unauthorized');
+    
+    if (isGitHubAuthError) {
+      const githubTokenStatus = process.env.GITHUB_TOKEN ? 'SET' : 'NOT SET';
+      return NextResponse.json({
+        error: 'GitHub authentication failed',
+        details: `GitHub token status: ${githubTokenStatus}. ${errorMessage}`,
+        solution: 'Please check your GitHub token in Vercel environment variables'
+      }, { status: 401 });
+    }
+    
     return NextResponse.json({
       error: 'Failed to scrape profiles',
-      details: error instanceof Error ? error.message : 'Unknown error'
+      details: errorMessage
     }, { status: 500 });
   }
 }
@@ -202,6 +216,12 @@ async function scrapeGitHubWithAPI(query: string, limit: number): Promise<Profil
   const profiles: Profile[] = [];
   const githubToken = process.env.GITHUB_TOKEN;
 
+  console.log(`[DEBUG] GitHub API - Token present: ${githubToken ? 'YES' : 'NO'}`);
+  if (!githubToken) {
+    console.error('[DEBUG] GitHub API - No token available, cannot make API calls');
+    return [];
+  }
+
   // Use enhanced NLP parser
   const { searchQuery, filters, sortBy } = parseGitHubQuery(query);
 
@@ -231,10 +251,17 @@ async function scrapeGitHubWithAPI(query: string, limit: number): Promise<Profil
     });
 
     if (!response.ok) {
-      console.error(`[DEBUG] GitHub API error: ${response.status}`);
+      console.error(`[DEBUG] GitHub API error: ${response.status} ${response.statusText}`);
       const errorBody = await response.text();
       console.error(`[DEBUG] GitHub API error body: ${errorBody}`);
-      return [];
+      
+      if (response.status === 401) {
+        throw new Error(`GitHub API Unauthorized: Token may be invalid or expired. Status: ${response.status}, Body: ${errorBody}`);
+      } else if (response.status === 403) {
+        throw new Error(`GitHub API Forbidden: Rate limit exceeded or insufficient permissions. Status: ${response.status}, Body: ${errorBody}`);
+      } else {
+        throw new Error(`GitHub API Error: ${response.status} ${response.statusText}. Body: ${errorBody}`);
+      }
     }
 
     const data = await response.json();
@@ -258,7 +285,7 @@ async function scrapeGitHubWithAPI(query: string, limit: number): Promise<Profil
       });
 
       if (!userResponse.ok) {
-        console.log(`[DEBUG] Could not fetch full profile for ${item.login}`);
+        console.log(`[DEBUG] Could not fetch full profile for ${item.login}: ${userResponse.status}`);
         continue;
       }
       const user = await userResponse.json();
@@ -286,7 +313,8 @@ async function scrapeGitHubWithAPI(query: string, limit: number): Promise<Profil
       });
     }
   } catch (error) {
-    console.error('Error fetching from GitHub API:', error);
+    console.error('[DEBUG] Error fetching from GitHub API:', error);
+    throw error; // Re-throw to be caught by the main error handler
   }
   return profiles;
 }
