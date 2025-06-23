@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import * as playwright from 'playwright';
+import chromium from '@sparticuz/chromium';
+import * as playwright from 'playwright-core';
 import { Profile, PlatformType } from '@/lib/types';
 import { randomUUID } from 'crypto';
 
@@ -21,9 +22,9 @@ export async function POST(request: NextRequest) {
 
     // Scrape real profiles
     const profiles = await scrapeProfiles(query, platform, limit);
-    
+
     if (profiles.length === 0) {
-      return NextResponse.json({ 
+      return NextResponse.json({
         profiles: [],
         message: 'No profiles found for the given query'
       });
@@ -31,7 +32,7 @@ export async function POST(request: NextRequest) {
 
     // Analyze profiles with AI
     const analyzedProfiles = await analyzeProfilesWithAI(query, profiles);
-    
+
     // Save to database
     await saveProfilesToDatabase(analyzedProfiles);
 
@@ -41,8 +42,8 @@ export async function POST(request: NextRequest) {
     });
 
   } catch (error) {
-    console.error('Error in on-demand scraping:', error);
-    return NextResponse.json({ 
+    console.error('[CRITICAL] ON-DEMAND SCRAPE FAILED:', JSON.stringify(error, null, 2));
+    return NextResponse.json({
       error: 'Failed to scrape profiles',
       details: error instanceof Error ? error.message : 'Unknown error'
     }, { status: 500 });
@@ -58,15 +59,18 @@ async function scrapeProfiles(
   limit: number
 ): Promise<Profile[]> {
   const profiles: Profile[] = [];
-  
+  let browser = null;
+
   try {
-    const browser = await playwright.chromium.launch({ 
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
+    console.log('[DEBUG] Launching browser with @sparticuz/chromium...');
+    browser = await playwright.chromium.launch({
+        args: chromium.args,
+        executablePath: await chromium.executablePath(),
+        headless: chromium.headless,
     });
-    
+
     const page = await browser.newPage();
-    
+
     // Set more realistic headers to avoid detection
     await page.setExtraHTTPHeaders({
       'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -77,7 +81,7 @@ async function scrapeProfiles(
       'Connection': 'keep-alive',
       'Upgrade-Insecure-Requests': '1',
     });
-    
+
     // Add GitHub token if available
     const githubToken = process.env.GITHUB_TOKEN;
     if (githubToken) {
@@ -85,7 +89,7 @@ async function scrapeProfiles(
         'Authorization': `token ${githubToken}`
       });
     }
-    
+
     await page.setViewportSize({ width: 1920, height: 1080 });
 
     if (platform === 'github') {
@@ -99,12 +103,15 @@ async function scrapeProfiles(
       profiles.push(...linkedinProfiles);
     }
 
-    await browser.close();
     console.log(`Scraped ${profiles.length} real profiles for query: ${query}`);
-    
+
   } catch (error) {
     console.error('Error in scraping:', error);
     throw new Error(`Scraping failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  } finally {
+      if (browser) {
+          await browser.close();
+      }
   }
 
   return profiles;
@@ -187,103 +194,99 @@ async function scrapeGitHubProfiles(page: any, query: string, limit: number): Pr
 async function scrapeGitHubWithAPI(query: string, limit: number): Promise<Profile[]> {
   const profiles: Profile[] = [];
   const githubToken = process.env.GITHUB_TOKEN;
-  
+
+  console.log('[DEBUG] GITHUB_TOKEN is set:', !!githubToken);
+  if (!githubToken) {
+    console.error('[CRITICAL] GITHUB_TOKEN is not set. Cannot use GitHub API.');
+    return []; // Fail gracefully
+  }
+
   // Use enhanced NLP parser
   const { searchQuery, filters, sortBy } = parseGitHubQuery(query);
-  
+
   // Build the final GitHub API query
   let githubQuery = '';
-  
+
   if (filters.length > 0) {
     // Use filters as the main query (they include the search terms)
     githubQuery = filters.join(' ');
   } else {
-    // Fallback to search query if no filters
-    githubQuery = searchQuery;
+    // Basic query if no filters are detected
+    githubQuery = `${searchQuery} in:bio`;
   }
-  
   console.log(`[DEBUG] Final GitHub API query: '${githubQuery}'`);
   console.log(`[DEBUG] Sort by: ${sortBy}`);
-  
+
+
+  const apiUrl = `https://api.github.com/search/users?q=${encodeURIComponent(githubQuery)}&sort=${sortBy}&order=desc&per_page=${limit * 2}`;
+  console.log(`[DEBUG] GitHub API URL: ${apiUrl}`);
+
   try {
-    const headers: Record<string, string> = {
-      'Accept': 'application/vnd.github.v3+json',
-      'User-Agent': 'Churros-AI-Lead-Generator'
-    };
-    
-    if (githubToken) {
-      headers['Authorization'] = `token ${githubToken}`;
-    }
-    
-    // Build URL with sort parameter
-    const url = `https://api.github.com/search/users?q=${encodeURIComponent(githubQuery)}&sort=${sortBy}&order=desc&per_page=${limit * 2}`;
-    console.log(`[DEBUG] GitHub API URL: ${url}`);
-    
-    const response = await fetch(url, { headers });
-    
+    const response = await fetch(apiUrl, {
+      headers: {
+        Authorization: `token ${githubToken}`,
+        'User-Agent': 'ChurrosAI/1.0',
+      },
+    });
+
     if (!response.ok) {
-      console.error(`[DEBUG] GitHub API error: ${response.status} ${response.statusText}`);
+      console.error(`[DEBUG] GitHub API error: ${response.status}`);
+      const errorBody = await response.text();
+      console.error(`[DEBUG] GitHub API error body: ${errorBody}`);
       return [];
     }
-    
+
     const data = await response.json();
-    console.log(`[DEBUG] GitHub API found ${data.items?.length || 0} users`);
-    
-    for (const user of data.items || []) {
-      try {
-        // Skip enterprise/organization accounts
-        if (user.type === 'Organization') {
-          console.log(`[DEBUG] Skipping organization: ${user.login}`);
-          continue;
-        }
-        
-        // Get detailed user info
-        const userResponse = await fetch(`https://api.github.com/users/${user.login}`, { headers });
-        const userData = userResponse.ok ? await userResponse.json() : user;
-        
-        // Skip if it's an organization
-        if (userData.type === 'Organization') {
-          console.log(`[DEBUG] Skipping organization (detailed): ${user.login}`);
-          continue;
-        }
-        
-        // Skip if no bio and low activity (likely inactive accounts)
-        if (!userData.bio && userData.public_repos < 1) {
-          console.log(`[DEBUG] Skipping inactive user: ${user.login}`);
-          continue;
-        }
-        
-        const profile: Profile = {
-          id: randomUUID(),
-          name: userData.name || user.login,
-          bio: userData.bio || `Active GitHub developer`,
-          platform: 'github',
-          username: user.login,
-          tags: extractTags((userData.bio || '') + ' ' + user.login + ' ' + (userData.company || '')),
-          score: 0.7,
-          last_updated: new Date().toISOString(),
-          fit_summary: null,
-          profile_url: userData.html_url || `https://github.com/${user.login}`,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        };
-        
-        profiles.push(profile);
-        console.log(`[DEBUG] Added API profile: ${user.login}`);
-        
-        // Stop when we have enough individual users
-        if (profiles.length >= limit) {
-          break;
-        }
-      } catch (error) {
-        console.error(`[DEBUG] Error getting user details for ${user.login}:`, error);
+    console.log(`[DEBUG] GitHub API found ${data.items.length} users`);
+
+    for (const item of data.items) {
+      if (profiles.length >= limit) break;
+
+      // Simple check to filter out organizations
+      if (item.type === 'Organization') {
+        console.log(`[DEBUG] Skipping organization: ${item.login}`);
         continue;
       }
+
+      // Fetch full user profile for more details
+      const userResponse = await fetch(item.url, {
+        headers: {
+          Authorization: `token ${githubToken}`,
+          'User-Agent': 'ChurrosAI/1.0',
+        },
+      });
+
+      if (!userResponse.ok) {
+        console.log(`[DEBUG] Could not fetch full profile for ${item.login}`);
+        continue;
+      }
+      const user = await userResponse.json();
+      console.log(`[DEBUG] Added API profile: ${user.login}`);
+
+      const tags = extractTags(user.bio || '' + ' ' + user.login + ' ' + (user.name || ''));
+
+      profiles.push({
+        id: randomUUID(),
+        name: user.name || user.login,
+        bio: user.bio || `A developer on GitHub.`,
+        platform: 'github',
+        tags: tags,
+        score: 0.8,
+        last_updated: new Date().toISOString(),
+        fit_summary: null,
+        profile_url: user.html_url,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        avatar_url: user.avatar_url,
+        followers: user.followers,
+        following: user.following,
+        location: user.location,
+        public_repos: user.public_repos,
+      });
     }
   } catch (error) {
-    console.error('[DEBUG] Error with GitHub API:', error);
+    console.error('Error fetching from GitHub API:', error);
   }
-  
   return profiles;
 }
 
@@ -291,68 +294,73 @@ async function scrapeGitHubWithAPI(query: string, limit: number): Promise<Profil
  * Scrape Twitter profiles
  */
 async function scrapeTwitterProfiles(page: any, query: string, limit: number): Promise<Profile[]> {
+  const twitterBearerToken = process.env.TWITTER_BEARER_TOKEN;
+  console.log('[DEBUG] TWITTER_BEARER_TOKEN is set:', !!twitterBearerToken);
+  if (!twitterBearerToken) {
+    console.error('[CRITICAL] TWITTER_BEARER_TOKEN is not set. Cannot use Twitter API.');
+    return [];
+  }
   const profiles: Profile[] = [];
-  
+
+  console.log(`[DEBUG] Starting Twitter scraping for query: "${query}" with limit: ${limit}`);
+
   try {
-    // Search Twitter users
-    const searchUrl = `https://twitter.com/search?q=${encodeURIComponent(query)}&src=typed_query&f=user`;
-    await page.goto(searchUrl, { waitUntil: 'networkidle' });
-    
-    // Wait for results to load
-    await page.waitForSelector('[data-testid="UserCell"]', { timeout: 10000 });
-    
-    // Extract user profiles
-    const userElements = await page.$$('[data-testid="UserCell"]');
-    
-    for (let i = 0; i < Math.min(limit, userElements.length); i++) {
-      try {
-        const userElement = userElements[i];
-        
-        // Extract username
-        const usernameElement = await userElement.$('[data-testid="User-Name"] a');
-        const username = usernameElement ? await usernameElement.textContent() : null;
-        
-        if (!username) continue;
-        
-        // Extract bio
-        const bioElement = await userElement.$('[data-testid="UserDescription"]');
-        const bio = bioElement ? await bioElement.textContent() : '';
-        
-        // Extract display name
-        const nameElement = await userElement.$('[data-testid="UserName"] span');
-        const name = nameElement ? await nameElement.textContent() : username;
-        
-        // Extract tags
-        const tags = extractTags(bio + ' ' + username);
-        
-        const profile: Profile = {
+    console.log('[DEBUG] Trying Twitter API v2...');
+    const searchUrl = `https://api.twitter.com/2/tweets/search/recent?query=${encodeURIComponent(query)}&max_results=${limit * 5}&expansions=author_id&user.fields=description,profile_image_url,public_metrics,location`;
+
+    const response = await fetch(searchUrl, {
+      headers: {
+        Authorization: `Bearer ${twitterBearerToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      console.error(`[DEBUG] Twitter API search error: ${response.status}`);
+      const errorBody = await response.text();
+      console.error(`[DEBUG] Twitter API error body: ${errorBody}`);
+
+      if (response.status === 403) {
+          console.error("[DEBUG] Twitter user search requires elevated access, trying alternative approach...");
+          return [];
+      }
+
+      return [];
+    }
+
+    const data = await response.json();
+    const users = data.includes?.users || [];
+
+    if (users.length > 0) {
+      console.log(`[DEBUG] Twitter API returned ${users.length} profiles`);
+      for (const user of users.slice(0, limit)) {
+        const tags = extractTags(user.description || '' + ' ' + user.name + ' ' + user.username);
+
+        profiles.push({
           id: randomUUID(),
-          name: name.trim(),
-          bio: bio.trim(),
+          name: user.name,
+          bio: user.description || `A user on Twitter/X.`,
           platform: 'twitter',
-          username: username,
           tags: tags,
-          score: 0.7,
+          score: 0.75,
           last_updated: new Date().toISOString(),
           fit_summary: null,
-          profile_url: `https://twitter.com/${username}`,
+          profile_url: `https://twitter.com/${user.username}`,
           created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        };
-        
-        profiles.push(profile);
-        
-      } catch (error) {
-        console.error(`Error extracting Twitter profile ${i}:`, error);
-        continue;
+          updated_at: new Date().toISOString(),
+          avatar_url: user.profile_image_url,
+          followers: user.public_metrics?.followers_count || 0,
+          following: user.public_metrics?.following_count || 0,
+          location: user.location,
+        });
       }
+    } else {
+        console.log("[DEBUG] Twitter API did not return any users, trying Playwright fallback (not implemented)...");
     }
-    
+
   } catch (error) {
-    console.error('Error scraping Twitter:', error);
-    throw error;
+    console.error('Error fetching from Twitter API:', error);
   }
-  
+
   return profiles;
 }
 
@@ -360,356 +368,239 @@ async function scrapeTwitterProfiles(page: any, query: string, limit: number): P
  * Scrape LinkedIn profiles
  */
 async function scrapeLinkedInProfiles(page: any, query: string, limit: number): Promise<Profile[]> {
-  const profiles: Profile[] = [];
-  
-  try {
-    // Search LinkedIn people
-    const searchUrl = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(query)}`;
-    await page.goto(searchUrl, { waitUntil: 'networkidle' });
-    
-    // Wait for results to load
-    await page.waitForSelector('.entity-result__item', { timeout: 10000 });
-    
-    // Extract user profiles
-    const userElements = await page.$$('.entity-result__item');
-    
-    for (let i = 0; i < Math.min(limit, userElements.length); i++) {
-      try {
-        const userElement = userElements[i];
-        
-        // Extract name
-        const nameElement = await userElement.$('.entity-result__title-text a');
-        const name = nameElement ? await nameElement.textContent() : null;
-        
-        if (!name) continue;
-        
-        // Extract title
-        const titleElement = await userElement.$('.entity-result__primary-subtitle');
-        const title = titleElement ? await titleElement.textContent() : '';
-        
-        // Extract bio
-        const bioElement = await userElement.$('.entity-result__summary');
-        const bio = bioElement ? await bioElement.textContent() : title;
-        
-        // Extract tags
-        const tags = extractTags(bio + ' ' + title);
-        
-        const profile: Profile = {
-          id: randomUUID(),
-          name: name.trim(),
-          bio: bio.trim(),
-          platform: 'linkedin',
-          username: name.toLowerCase().replace(/\s+/g, '-'),
-          tags: tags,
-          score: 0.7,
-          last_updated: new Date().toISOString(),
-          fit_summary: null,
-          profile_url: `https://linkedin.com/in/${name.toLowerCase().replace(/\s+/g, '-')}`,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        };
-        
-        profiles.push(profile);
-        
-      } catch (error) {
-        console.error(`Error extracting LinkedIn profile ${i}:`, error);
-        continue;
-      }
-    }
-    
-  } catch (error) {
-    console.error('Error scraping LinkedIn:', error);
-    throw error;
-  }
-  
-  return profiles;
+    console.log("[DEBUG] LinkedIn scraping is not implemented yet.");
+    return [];
 }
 
+
 /**
- * Analyze profiles with AI
+ * Use AI to analyze profiles and score them
  */
 async function analyzeProfilesWithAI(
   query: string,
   profiles: Profile[]
 ): Promise<Profile[]> {
-  const groqApiKey = process.env.GROQ_API_KEY;
-  
-  if (!groqApiKey) {
-    console.warn('GROQ_API_KEY not found, skipping AI analysis');
-    return profiles;
-  }
-
   const analyzedProfiles: Profile[] = [];
 
   for (const profile of profiles) {
     try {
-      const analysis = await analyzeProfileWithGroq(query, profile);
-      
-      analyzedProfiles.push({
+      const { fitSummary, score, tags } = await analyzeProfileWithGroq(query, profile);
+
+      const updatedProfile = {
         ...profile,
-        fit_summary: analysis.fitSummary,
-        score: analysis.score,
-        tags: [...new Set([...profile.tags, ...analysis.tags])]
-      });
-      
+        fit_summary: fitSummary,
+        score: score,
+        tags: [...new Set([...profile.tags, ...tags])] // Merge and deduplicate tags
+      };
+
+      analyzedProfiles.push(updatedProfile);
     } catch (error) {
       console.error(`Error analyzing profile ${profile.name}:`, error);
-      // Keep profile without AI analysis
-      analyzedProfiles.push(profile);
+      // Add the profile anyway with a default score
+      analyzedProfiles.push({
+        ...profile,
+        fit_summary: "Could not analyze profile.",
+        score: 0.5,
+      });
     }
   }
 
   return analyzedProfiles;
 }
 
-/**
- * Analyze a single profile with Groq AI
- */
+
 async function analyzeProfileWithGroq(
   query: string,
   profile: Profile
 ): Promise<{ fitSummary: string; score: number; tags: string[] }> {
-  const groqApiKey = process.env.GROQ_API_KEY;
-  
-  if (!groqApiKey) {
-    return {
-      fitSummary: `Profile matches ${query} criteria`,
-      score: 0.7,
-      tags: profile.tags || []
-    };
-  }
-
-  try {
-    const prompt = `Analyze this candidate profile for a job search and respond ONLY with valid JSON.
-
-Query: "${query}"
-Candidate: ${profile.name}
-Bio: ${profile.bio || 'No bio available'}
-Platform: ${profile.platform}
-
-Respond with ONLY this JSON format (no other text):
-{
-  "fitSummary": "Brief summary of why this candidate fits",
-  "score": 0.85,
-  "tags": ["tag1", "tag2", "tag3"]
-}`;
-
-    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${groqApiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'llama3-70b-8192',
-        messages: [
-          {
-            role: 'user',
-            content: prompt
-          }
-        ],
-        temperature: 0.3,
-        max_tokens: 500
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error(`Groq API error: ${response.statusText}`);
+    const groqApiKey = process.env.GROQ_API_KEY;
+    if (!groqApiKey) {
+        throw new Error("GROQ_API_KEY is not set");
     }
 
-    const data = await response.json();
-    const content = data.choices[0]?.message?.content;
+    const { Groq } = require("groq-sdk");
+    const groq = new Groq({ apiKey: groqApiKey });
 
-    if (!content) {
-      throw new Error('No content in Groq response');
+    const systemPrompt = `
+You are an expert talent evaluator. Your task is to analyze a candidate's profile based on a company's ideal candidate profile.
+The user will provide the company's ideal candidate profile (the 'query') and the candidate's professional bio.
+You must return a JSON object with three fields:
+1.  "fitSummary": A concise, 1-2 sentence summary explaining why this candidate is or is not a good fit.
+2.  "score": A numerical score from 0.0 to 1.0 representing the match quality (0.0 = no match, 1.0 = perfect match).
+3.  "tags": An array of 3-5 relevant keyword tags from the candidate's bio (e.g., ["React", "Node.js", "AI", "SaaS", "Founder"]).
+
+Analyze based on skills, experience, and overall vibe.
+If the bio is empty or uninformative, provide a low score and a summary explaining the lack of information.
+Be critical but fair. Do not invent information not present in the bio.
+`;
+
+    const userPrompt = `
+**Company Query:** "${query}"
+**Candidate Profile (${profile.platform}):**
+- **Name:** ${profile.name}
+- **Bio:** ${profile.bio}
+`;
+
+    try {
+        const chatCompletion = await groq.chat.completions.create({
+            messages: [
+                {
+                    role: "system",
+                    content: systemPrompt,
+                },
+                {
+                    role: "user",
+                    content: userPrompt,
+                },
+            ],
+            model: "llama3-8b-8192",
+            temperature: 0.3,
+            max_tokens: 200,
+            response_format: { type: "json_object" },
+        });
+
+        const result = JSON.parse(chatCompletion.choices[0]?.message?.content || "{}");
+
+        // Basic validation of the result
+        if (typeof result.fitSummary === 'string' && typeof result.score === 'number' && Array.isArray(result.tags)) {
+            return {
+                fitSummary: result.fitSummary,
+                score: Math.max(0, Math.min(1, result.score)), // Clamp score between 0 and 1
+                tags: result.tags.map((tag: any) => String(tag)), // Ensure tags are strings
+            };
+        } else {
+             throw new Error("Invalid JSON structure from AI analysis");
+        }
+
+    } catch (error) {
+        console.error("Error analyzing profile with Groq:", error);
+        throw error;
     }
-
-    // Try to extract JSON from response
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error('No JSON found in response');
-    }
-
-    const analysis = JSON.parse(jsonMatch[0]);
-    
-    return {
-      fitSummary: analysis.fitSummary || `Profile matches ${query} criteria`,
-      score: analysis.score || 0.7,
-      tags: analysis.tags || profile.tags || []
-    };
-    
-  } catch (error) {
-    console.error('Error in Groq analysis:', error);
-    return {
-      fitSummary: `Profile matches ${query} criteria`,
-      score: 0.7,
-      tags: profile.tags || []
-    };
-  }
 }
 
+
 /**
- * Save profiles to database
+ * Save profiles to the database
  */
 async function saveProfilesToDatabase(profiles: Profile[]): Promise<void> {
-  try {
-    for (const profile of profiles) {
-      try {
-        const { error } = await supabase
-          .from('profiles')
-          .upsert({
-            id: profile.id,
-            name: profile.name,
-            bio: profile.bio,
-            platform: profile.platform,
-            username: profile.username,
-            tags: profile.tags,
-            score: profile.score,
-            last_updated: profile.last_updated,
-            fit_summary: profile.fit_summary,
-            profile_url: profile.profile_url,
-            created_at: profile.created_at,
-            updated_at: profile.updated_at
-          });
+  if (profiles.length === 0) {
+    return;
+  }
 
-        if (error) {
-          console.error('Error saving profile to database:', error);
-        }
-      } catch (error) {
-        console.error('Error saving profile to database:', error);
-      }
-    }
-  } catch (error) {
-    console.error('Error in database save:', error);
+  // Upsert profiles into the database
+  // `onConflict` will update existing profiles based on name and platform
+  const { data, error } = await supabase
+    .from('profiles')
+    .upsert(profiles, { onConflict: 'name,platform' });
+
+  if (error) {
+    console.error('Error saving profiles to database:', error);
+    // Don't throw error, just log it. The main function can still return profiles.
+  } else {
+    console.log(`Successfully saved ${profiles.length} profiles to the database.`);
   }
 }
 
 /**
- * Extract tags from text
+ * Extracts relevant tags from a text string
  */
 function extractTags(text: string): string[] {
-  const tags: string[] = [];
-  const textLower = text.toLowerCase();
-  
-  // Common tech tags
-  const techKeywords = [
-    'javascript', 'python', 'react', 'node', 'typescript', 'java', 'go', 'rust',
-    'ai', 'ml', 'machine learning', 'data science', 'frontend', 'backend',
-    'devops', 'cloud', 'aws', 'docker', 'kubernetes', 'sql', 'nosql',
-    'design', 'ux', 'ui', 'product', 'management', 'leadership'
-  ];
-  
-  techKeywords.forEach(keyword => {
-    if (textLower.includes(keyword)) {
-      tags.push(keyword.replace(/\s+/g, '-'));
-    }
+  if (!text) return [];
+
+  const commonWords = new Set(['a', 'an', 'the', 'and', 'or', 'in', 'on', 'at', 'to', 'for', 'with', 'by', 'as', 'i', 'you', 'he', 'she', 'it', 'we', 'they']);
+
+  const words = text
+    .toLowerCase()
+    .replace(/[^a-z0-9#+\-.]/g, ' ') // Allow #, +, - for things like C++, C#, .NET
+    .split(/\s+/)
+    .filter(word => word.length > 1 && !commonWords.has(word) && !/^\d+$/.test(word));
+
+  // A simple heuristic for identifying potential tech/skill tags
+  const potentialTags = words.filter(word =>
+    word.includes('#') ||
+    word.includes('+') ||
+    word.includes('.') ||
+    /^[a-zA-Z]{2,20}$/.test(word) // common skills are usually just letters
+  );
+
+  // Return a unique set of the most frequent tags
+  const tagCounts: { [key: string]: number } = {};
+  potentialTags.forEach(tag => {
+    tagCounts[tag] = (tagCounts[tag] || 0) + 1;
   });
-  
-  return tags.slice(0, 10); // Limit to 10 tags
+
+  return Object.keys(tagCounts)
+    .sort((a, b) => tagCounts[b] - tagCounts[a])
+    .slice(0, 10);
 }
 
-/**
- * Robust GitHub query parser that handles complex natural language
- */
+
 function parseGitHubQuery(prompt: string): { searchQuery: string, filters: string[], sortBy: string } {
-  const queryLower = prompt.toLowerCase();
-  
-  console.log('[DEBUG] Parsing GitHub query:', prompt);
-  
-  // Comprehensive role/skill detection
-  const roles = [
-    'designer', 'developer', 'engineer', 'manager', 'lead', 'architect', 
-    'artist', 'writer', 'founder', 'maker', 'builder', 'hacker', 'coder', 
-    'programmer', 'consultant', 'specialist', 'expert', 'professional',
-    'frontend', 'backend', 'fullstack', 'ui', 'ux', 'product', 'data',
-    'devops', 'mobile', 'web', 'software', 'systems', 'cloud', 'ai', 'ml',
-    'machine learning', 'data science', 'analyst', 'scientist'
-  ];
-  
-  // Activity indicators
-  const activityKeywords = [
-    'active', 'activity', 'recent', 'commit', 'contributor', 'repos', 
-    'repository', 'contributions', 'posts', 'tweets', 'updates', 'latest',
-    'ongoing', 'current', 'recently', 'frequently', 'regular'
-  ];
-  
-  // Experience level indicators
-  const experienceKeywords = [
-    'senior', 'junior', 'mid', 'experienced', 'expert', 'beginner', 
-    'advanced', 'intermediate', 'veteran', 'seasoned', 'new', 'fresh'
-  ];
-  
-  // Extract all relevant keywords (don't strip them!)
-  const detectedKeywords: string[] = [];
-  
-  // Extract roles
-  for (const role of roles) {
-    if (queryLower.includes(role)) {
-      detectedKeywords.push(role);
+    const query = prompt.toLowerCase();
+
+    console.log("[DEBUG] Parsing GitHub query:", prompt);
+
+    // Define keywords for different categories
+    const roleKeywords = ['software engineer', 'developer', 'designer', 'data scientist', 'product manager', 'founder'];
+    const techKeywords = ['react', 'python', 'typescript', 'node.js', 'ai', 'machine learning', 'devops'];
+    const activityKeywords = {
+        'followers': ['popular', 'well-known', 'influential'],
+        'repositories': ['prolific', 'active developer', 'many projects', 'many repos'],
+        'joined': ['new user', 'recently joined', 'new to github'],
+    };
+
+    let detectedKeywords: string[] = [];
+    let hasActivity = false;
+
+    // Detect roles and technologies
+    [...roleKeywords, ...techKeywords].forEach(keyword => {
+        if (query.includes(keyword)) {
+            detectedKeywords.push(keyword);
+        }
+    });
+
+    console.log("[DEBUG] Detected keywords:", detectedKeywords);
+
+    // Determine sort order based on activity
+    let sortBy = 'followers'; // Default sort
+    for (const [sortKey, keywords] of Object.entries(activityKeywords)) {
+        if (keywords.some(k => query.includes(k))) {
+            sortBy = sortKey;
+            hasActivity = true;
+            break;
+        }
     }
-  }
-  
-  // Extract experience level
-  const experienceLevel = experienceKeywords.find(keyword => queryLower.includes(keyword)) || '';
-  if (experienceLevel) {
-    detectedKeywords.push(experienceLevel);
-  }
-  
-  // Check for activity
-  const hasActivity = activityKeywords.some(keyword => queryLower.includes(keyword));
-  
-  console.log('[DEBUG] Detected keywords:', detectedKeywords);
-  console.log('[DEBUG] Has activity:', hasActivity);
-  
-  // Build search query - KEEP ALL RELEVANT KEYWORDS
-  let searchQuery = '';
-  
-  if (detectedKeywords.length > 0) {
-    // Use all detected keywords
-    searchQuery = detectedKeywords.join(' ');
-  } else {
-    // If no keywords detected, extract meaningful words from the prompt
-    const words = prompt.toLowerCase().split(/\s+/);
-    const meaningfulWords = words.filter(word => 
-      word.length > 2 && 
-      !['with', 'who', 'that', 'have', 'has', 'are', 'is', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'by', 'github', 'git'].includes(word)
-    );
-    searchQuery = meaningfulWords.join(' ');
-  }
-  
-  // If still empty, use a fallback
-  if (!searchQuery.trim()) {
-    searchQuery = 'developer';
-  }
-  
-  // Build GitHub API filters
-  const filters: string[] = [];
-  let sortBy = 'followers'; // Default sort
-  
-  // Add activity filters if requested
-  if (hasActivity) {
-    filters.push('repos:>1');
-    filters.push('followers:>10');
-    sortBy = 'repositories'; // Sort by repository count for active users
-  }
-  
-  // Add experience-based filters
-  if (experienceLevel === 'senior' || experienceLevel === 'experienced' || experienceLevel === 'expert') {
-    filters.push('repos:>5');
-    filters.push('followers:>50');
-  }
-  
-  // Add bio search to focus on relevant profiles
-  if (searchQuery) {
-    filters.push(`in:bio ${searchQuery}`);
-  }
-  
-  console.log('[DEBUG] Final GitHub query:', { 
-    searchQuery, 
-    filters, 
-    sortBy,
-    finalQuery: filters.join(' ')
-  });
-  
-  return { searchQuery, filters, sortBy };
-} 
+
+    console.log("[DEBUG] Has activity:", hasActivity);
+
+    // Randomize sort if no activity is specified to get varied results
+    if (!hasActivity) {
+        const sortOptions = ['followers', 'repositories', 'joined'];
+        sortBy = sortOptions[Math.floor(Math.random() * sortOptions.length)];
+    }
+
+    // Build search filters
+    const filters: string[] = [];
+    if (detectedKeywords.length > 0) {
+        detectedKeywords.forEach(keyword => {
+            filters.push(`in:bio ${keyword}`);
+        });
+    } else {
+        // If no keywords, use the original prompt as a general search
+        filters.push(`in:bio ${prompt}`);
+    }
+
+    // Create the final search query
+    const finalQuery = filters.join(' ');
+
+    const result = {
+        searchQuery: detectedKeywords.join(' ') || prompt,
+        filters,
+        sortBy,
+        finalQuery
+    };
+
+    console.log("[DEBUG] Final GitHub query:", result);
+
+    return result;
+}
