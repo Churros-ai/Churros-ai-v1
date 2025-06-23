@@ -11,6 +11,13 @@ const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 export async function POST(request: NextRequest) {
+  // Comprehensive environment variable check
+  console.log('[DEBUG] Vercel Environment Check:');
+  console.log(`- GITHUB_TOKEN: ${process.env.GITHUB_TOKEN ? 'SET' : 'NOT SET'}`);
+  console.log(`- TWITTER_BEARER_TOKEN: ${process.env.TWITTER_BEARER_TOKEN ? 'SET' : 'NOT SET'}`);
+  console.log(`- GROQ_API_KEY: ${process.env.GROQ_API_KEY ? 'SET' : 'NOT SET'}`);
+  console.log(`- SUPABASE_SERVICE_ROLE_KEY: ${process.env.SUPABASE_SERVICE_ROLE_KEY ? 'SET' : 'NOT SET'}`);
+
   try {
     const { query, platform = 'github', limit = 10 } = await request.json();
 
@@ -195,12 +202,6 @@ async function scrapeGitHubWithAPI(query: string, limit: number): Promise<Profil
   const profiles: Profile[] = [];
   const githubToken = process.env.GITHUB_TOKEN;
 
-  console.log('[DEBUG] GITHUB_TOKEN is set:', !!githubToken);
-  if (!githubToken) {
-    console.error('[CRITICAL] GITHUB_TOKEN is not set. Cannot use GitHub API.');
-    return []; // Fail gracefully
-  }
-
   // Use enhanced NLP parser
   const { searchQuery, filters, sortBy } = parseGitHubQuery(query);
 
@@ -295,11 +296,6 @@ async function scrapeGitHubWithAPI(query: string, limit: number): Promise<Profil
  */
 async function scrapeTwitterProfiles(page: any, query: string, limit: number): Promise<Profile[]> {
   const twitterBearerToken = process.env.TWITTER_BEARER_TOKEN;
-  console.log('[DEBUG] TWITTER_BEARER_TOKEN is set:', !!twitterBearerToken);
-  if (!twitterBearerToken) {
-    console.error('[CRITICAL] TWITTER_BEARER_TOKEN is not set. Cannot use Twitter API.');
-    return [];
-  }
   const profiles: Profile[] = [];
 
   console.log(`[DEBUG] Starting Twitter scraping for query: "${query}" with limit: ${limit}`);
