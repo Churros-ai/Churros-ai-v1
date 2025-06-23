@@ -85,7 +85,10 @@ async function triggerOnDemandScraping(
   limit: number = 10
 ): Promise<Profile[]> {
   try {
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL;
+    if (!baseUrl) {
+      throw new Error('CRITICAL: NEXT_PUBLIC_APP_URL environment variable is not set on Vercel!');
+    }
     const scrapingUrl = `${baseUrl}/api/on-demand-scrape`;
     
     const response = await fetch(scrapingUrl, {
