@@ -18,53 +18,13 @@ export async function POST(request: NextRequest) {
 
     console.log('Generating leads for:', companyDNA);
 
-    // Step 1: Search existing database
-    let databaseLeads: Profile[] = [];
-    try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .ilike('bio', `%${companyDNA.split(' ').slice(0, 3).join(' ')}%`)
-        .order('score', { ascending: false })
-        .limit(limit);
-
-      if (error) {
-        console.error('Database search error:', error);
-      } else {
-        databaseLeads = data || [];
-      }
-    } catch (error) {
-      console.error('Database connection error:', error);
-    }
-
-    // Step 2: If not enough results, trigger on-demand scraping
-    let scrapedLeads: Profile[] = [];
-    if (databaseLeads.length < Math.min(limit, 5)) {
-      console.log('Not enough database results, triggering on-demand scraping...');
-      try {
-        scrapedLeads = await triggerOnDemandScraping(companyDNA, platform, limit);
-      } catch (error) {
-        console.error('Error triggering on-demand scraping:', error);
-      }
-    }
-
-    // Step 3: Combine and deduplicate results
-    const allLeads = [...databaseLeads, ...scrapedLeads];
-    const uniqueLeads = allLeads.filter((lead, index, self) => 
-      index === self.findIndex(l => l.name === lead.name && l.platform === lead.platform)
-    );
-
-    // Step 4: Sort by score and limit results
-    const sortedLeads = uniqueLeads
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit);
-
-    const source = databaseLeads.length > 0 ? 'database' : 'scraped';
+    // Always trigger on-demand scraping
+    const scrapedLeads = await triggerOnDemandScraping(companyDNA, platform, limit);
 
     // Return the exact structure the frontend expects
     return NextResponse.json({
-      leads: sortedLeads,
-      source
+      leads: scrapedLeads,
+      source: 'scraped'
     });
 
   } catch (error) {

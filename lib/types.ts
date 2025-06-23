@@ -14,6 +14,11 @@ export interface Profile {
   created_at: string;
   updated_at: string;
   tracking_count?: number;
+  avatar_url?: string;
+  followers?: number;
+  following?: number;
+  location?: string;
+  public_repos?: number;
 }
 
 export interface CreateProfileInput {

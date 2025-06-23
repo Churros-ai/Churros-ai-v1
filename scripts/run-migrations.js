@@ -1,36 +1,45 @@
-const { createClient } = require('@supabase/supabase-js');
+const { Client } = require('pg');
 const fs = require('fs');
 const path = require('path');
 
 // Load environment variables
 require('dotenv').config({ path: '.env.local' });
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const connectionString = process.env.DATABASE_URL;
 
-if (!supabaseUrl || !supabaseKey) {
-  console.error('❌ Missing Supabase environment variables');
-  console.error('Please check your .env.local file');
+if (!connectionString) {
+  console.error('❌ Missing DATABASE_URL environment variable');
+  console.error('Please add your full database connection string to .env.local');
   process.exit(1);
 }
 
-const supabase = createClient(supabaseUrl, supabaseKey);
+const client = new Client({ connectionString });
+
+async function ensureMigrationsTable() {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS migrations_log (
+      id SERIAL PRIMARY KEY,
+      migration_name VARCHAR(255) NOT NULL UNIQUE,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
+  `);
+}
+
+async function getRanMigrations() {
+  const res = await client.query('SELECT migration_name FROM migrations_log');
+  return new Set(res.rows.map(r => r.migration_name));
+}
 
 async function runMigration(migrationFile) {
   try {
     console.log(`📄 Running migration: ${migrationFile}`);
-    
     const sqlPath = path.join(__dirname, '..', 'supabase', 'migrations', migrationFile);
     const sql = fs.readFileSync(sqlPath, 'utf8');
     
-    const { error } = await supabase.rpc('exec_sql', { sql });
+    await client.query(sql);
+    await client.query('INSERT INTO migrations_log (migration_name) VALUES ($1)', [migrationFile]);
     
-    if (error) {
-      console.error(`❌ Error running ${migrationFile}:`, error);
-      return false;
-    }
-    
-    console.log(`✅ Successfully ran ${migrationFile}`);
+    console.log(`✅ Successfully ran and logged ${migrationFile}`);
     return true;
   } catch (error) {
     console.error(`❌ Error running ${migrationFile}:`, error);
@@ -39,24 +48,35 @@ async function runMigration(migrationFile) {
 }
 
 async function runMigrations() {
+  await client.connect();
   console.log('🚀 Starting database migrations...\n');
   
-  const migrations = [
-    '001_create_profiles_table.sql',
-    '002_create_tracked_profiles_table.sql'
-  ];
+  try {
+    await ensureMigrationsTable();
+    const ranMigrations = await getRanMigrations();
+    const migrationsDir = path.join(__dirname, '..', 'supabase', 'migrations');
+    const allMigrations = fs.readdirSync(migrationsDir).sort();
   
-  for (const migration of migrations) {
+    for (const migration of allMigrations) {
+      if (!ranMigrations.has(migration)) {
     const success = await runMigration(migration);
     if (!success) {
       console.error(`❌ Failed to run migration: ${migration}`);
       process.exit(1);
     }
     console.log('');
+      } else {
+        console.log(`Skipping already run migration: ${migration}`);
+      }
   }
   
   console.log('🎉 All migrations completed successfully!');
-  console.log('Your database tables are now ready.');
+  } finally {
+    await client.end();
+  }
 }
 
-runMigrations().catch(console.error); 
+runMigrations().catch(error => {
+  console.error('❌ Migration process failed:', error);
+  process.exit(1);
+}); 

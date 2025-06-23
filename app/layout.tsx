@@ -1,6 +1,10 @@
 import type React from "react"
 import type { Metadata } from "next"
 import "./globals.css"
+import { Inter } from "next/font/google"
+import { SearchProvider } from "@/context/SearchContext"
+
+const inter = Inter({ subsets: ["latin"] })
 
 export const metadata: Metadata = {
   title: "Churros AI - Talent Discovery for Startups",
@@ -24,7 +28,11 @@ export default function RootLayout({
           rel="stylesheet"
         />
       </head>
-      <body className="font-['Open_Sans'] antialiased">{children}</body>
+      <body className={inter.className}>
+        <SearchProvider>
+          {children}
+        </SearchProvider>
+      </body>
     </html>
   )
 }

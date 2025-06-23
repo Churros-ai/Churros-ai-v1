@@ -40,9 +40,6 @@ export async function POST(request: NextRequest) {
     // Analyze profiles with AI
     const analyzedProfiles = await analyzeProfilesWithAI(query, profiles);
 
-    // Save to database
-    await saveProfilesToDatabase(analyzedProfiles);
-
     return NextResponse.json({
       profiles: analyzedProfiles,
       count: analyzedProfiles.length
@@ -502,28 +499,6 @@ Be critical but fair. Do not invent information not present in the bio.
     }
 }
 
-
-/**
- * Save profiles to the database
- */
-async function saveProfilesToDatabase(profiles: Profile[]): Promise<void> {
-  if (profiles.length === 0) {
-    return;
-  }
-
-  // Upsert profiles into the database
-  // `onConflict` will update existing profiles based on name and platform
-  const { data, error } = await supabase
-    .from('profiles')
-    .upsert(profiles, { onConflict: 'name,platform' });
-
-  if (error) {
-    console.error('Error saving profiles to database:', error);
-    // Don't throw error, just log it. The main function can still return profiles.
-  } else {
-    console.log(`Successfully saved ${profiles.length} profiles to the database.`);
-  }
-}
 
 /**
  * Extracts relevant tags from a text string

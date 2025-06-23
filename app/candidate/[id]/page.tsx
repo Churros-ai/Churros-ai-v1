@@ -20,65 +20,47 @@ import {
   Loader2,
 } from "lucide-react"
 
-interface CandidateDetail {
-  id: string
-  name: string
-  avatar: string
-  title: string
-  location: string
-  summary: string
-  tldr: string
-  matchScore: number
-  alignment: {
-    values: string[]
-    vibe: string
-    culture: string
-  }
-  signals: Array<{
-    type: "github" | "twitter" | "linkedin"
-    title: string
-    content: string
-    engagement: string
-    date: string
-    url: string
-  }>
-  skills: string[]
-  experience: string[]
-  profile_url?: string
-  platform?: string
+interface Candidate {
+  id: string;
+  name: string;
+  bio: string | null;
+  platform: 'twitter' | 'github' | 'substack' | 'linkedin' | 'other';
+  tags: string[];
+  score: number;
+  last_updated: string;
+  fit_summary: string | null;
+  profile_url: string | null;
+  username?: string;
+  created_at: string;
+  updated_at: string;
+  tracking_count?: number;
+  avatar_url?: string;
+  followers?: number;
+  following?: number;
+  location?: string;
+  public_repos?: number;
 }
 
 export default function CandidateDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
   const [isMessaging, setIsMessaging] = useState(false)
-  const [candidate, setCandidate] = useState<CandidateDetail | null>(null)
+  const [candidate, setCandidate] = useState<Candidate | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    fetchCandidateDetails()
-  }, [id])
-
-  const fetchCandidateDetails = async () => {
-    try {
-      setLoading(true)
-      setError(null)
-      
-      const response = await fetch(`/api/profile-details?id=${id}`)
-      
-      if (!response.ok) {
-        throw new Error('Failed to fetch profile details')
-      }
-      
-      const data = await response.json()
-      setCandidate(data)
-    } catch (error) {
-      console.error('Error fetching candidate details:', error)
-      setError('Failed to load profile details')
-    } finally {
+    const storedCandidate = localStorage.getItem('selected_candidate')
+    if (storedCandidate) {
+      setCandidate(JSON.parse(storedCandidate))
+      setLoading(false)
+    } else {
+      setError('No candidate data found. Please go back and select a candidate.')
       setLoading(false)
     }
-  }
+
+    // Optional: clear the storage after reading
+    // localStorage.removeItem('selected_candidate');
+  }, [id])
 
   const handleMessageCandidate = () => {
     setIsMessaging(true)
@@ -166,7 +148,7 @@ export default function CandidateDetailPage({ params }: { params: Promise<{ id: 
             </div>
           </div>
           <Badge className="bg-[#E0531F]/10 text-[#E0531F] font-bold text-sm px-3 py-1">
-            {candidate.matchScore}% DNA Match
+            {candidate.score}% DNA Match
           </Badge>
         </div>
       </header>
@@ -178,7 +160,7 @@ export default function CandidateDetailPage({ params }: { params: Promise<{ id: 
             <CardContent className="p-6 sm:p-8">
               <div className="flex flex-col sm:flex-row items-start sm:items-center space-y-4 sm:space-y-0 sm:space-x-6">
                 <Avatar className="w-20 h-20 sm:w-24 sm:h-24">
-                  <AvatarImage src={candidate.avatar || "/placeholder.svg"} alt={candidate.name} />
+                  <AvatarImage src={candidate.avatar_url || "/placeholder.svg"} alt={candidate.name} />
                   <AvatarFallback className="bg-[#E0531F] text-white text-2xl font-bold">
                     {candidate.name
                       .split(" ")
@@ -190,22 +172,22 @@ export default function CandidateDetailPage({ params }: { params: Promise<{ id: 
                 <div className="flex-1 space-y-3">
                   <div>
                     <h1 className="text-2xl sm:text-3xl font-bold text-[#242424] mb-2">{candidate.name}</h1>
-                    <p className="text-lg text-[#242424] opacity-80 font-medium mb-1">{candidate.title}</p>
+                    <p className="text-lg text-[#242424] opacity-80 font-medium mb-1">{candidate.bio}</p>
                     <div className="flex items-center text-[#242424] opacity-60 text-sm">
                       <MapPin className="w-4 h-4 mr-1" />
-                      {candidate.location}
+                      {candidate.location || 'Location not available'}
                     </div>
                   </div>
 
                   <div className="flex flex-wrap gap-2">
-                    {candidate.skills.slice(0, 4).map((skill) => (
+                    {(candidate.tags || []).slice(0, 4).map((skill) => (
                       <Badge key={skill} variant="secondary" className="bg-gray-100 text-[#242424]">
                         {skill}
                       </Badge>
                     ))}
-                    {candidate.skills.length > 4 && (
+                    {candidate.tags && candidate.tags.length > 4 && (
                       <Badge variant="secondary" className="bg-gray-100 text-[#242424]">
-                        +{candidate.skills.length - 4} more
+                        +{candidate.tags.length - 4} more
                       </Badge>
                     )}
                   </div>
@@ -246,7 +228,7 @@ export default function CandidateDetailPage({ params }: { params: Promise<{ id: 
               </CardTitle>
             </CardHeader>
             <CardContent className="pt-0">
-              <p className="text-[#242424] opacity-80 leading-relaxed">{candidate.tldr}</p>
+              <p className="text-[#242424] opacity-80 leading-relaxed">{candidate.fit_summary || 'No summary available.'}</p>
             </CardContent>
           </Card>
 
@@ -259,7 +241,7 @@ export default function CandidateDetailPage({ params }: { params: Promise<{ id: 
               <div>
                 <h4 className="font-medium text-[#242424] mb-3">Shared Values</h4>
                 <div className="flex flex-wrap gap-2">
-                  {candidate.alignment.values.map((value) => (
+                  {(candidate.tags || []).slice(0, 5).map((value) => (
                     <Badge key={value} className="bg-[#E0531F]/10 text-[#E0531F] border-[#E0531F]/20">
                       {value}
                     </Badge>
@@ -271,14 +253,14 @@ export default function CandidateDetailPage({ params }: { params: Promise<{ id: 
 
               <div>
                 <h4 className="font-medium text-[#242424] mb-2">Team Vibe Match</h4>
-                <p className="text-[#242424] opacity-80">{candidate.alignment.vibe}</p>
+                <p className="text-[#242424] opacity-80">{candidate.fit_summary || 'Analysis not available.'}</p>
               </div>
 
               <Separator />
 
               <div>
                 <h4 className="font-medium text-[#242424] mb-2">Culture Fit</h4>
-                <p className="text-[#242424] opacity-80">{candidate.alignment.culture}</p>
+                <p className="text-[#242424] opacity-80">{candidate.fit_summary || 'Analysis not available.'}</p>
               </div>
             </CardContent>
           </Card>
@@ -290,12 +272,12 @@ export default function CandidateDetailPage({ params }: { params: Promise<{ id: 
               <p className="text-[#242424] opacity-60">Recent activity that shows they're a great fit</p>
             </CardHeader>
             <CardContent className="pt-0 space-y-4">
-              {candidate.signals.length > 0 ? (
-                candidate.signals.map((signal, index) => (
+              {candidate.tracking_count > 0 ? (
+                candidate.tracking_count.map((signal, index) => (
                   <div key={index} className="border border-gray-100 rounded-lg p-4 hover:shadow-md transition-shadow">
                     <div className="flex items-start justify-between mb-3">
                       <div className="flex items-center space-x-3">
-                        <div className="p-2 bg-gray-50 rounded-lg">{getSignalIcon(signal.type)}</div>
+                        <div className="p-2 bg-gray-50 rounded-lg">{getSignalIcon(candidate.platform)}</div>
                         <div>
                           <h5 className="font-medium text-[#242424]">{signal.title}</h5>
                           <p className="text-sm text-[#242424] opacity-60">{signal.date}</p>
@@ -337,12 +319,7 @@ export default function CandidateDetailPage({ params }: { params: Promise<{ id: 
               </CardHeader>
               <CardContent className="pt-0">
                 <div className="space-y-2">
-                  {candidate.experience.map((exp, index) => (
-                    <div key={index} className="flex items-center space-x-2">
-                      <div className="w-2 h-2 bg-[#E0531F] rounded-full"></div>
-                      <span className="text-[#242424] opacity-80">{exp}</span>
-                    </div>
-                  ))}
+                  <p className="text-gray-500">Experience data not available.</p>
                 </div>
               </CardContent>
             </Card>
@@ -353,7 +330,7 @@ export default function CandidateDetailPage({ params }: { params: Promise<{ id: 
               </CardHeader>
               <CardContent className="pt-0">
                 <div className="flex flex-wrap gap-2">
-                  {candidate.skills.map((skill) => (
+                  {(candidate.tags || []).map((skill) => (
                     <Badge key={skill} variant="secondary" className="bg-gray-100 text-[#242424]">
                       {skill}
                     </Badge>

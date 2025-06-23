@@ -8,80 +8,25 @@ import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Search, Sparkles, Github, Twitter, Linkedin, ExternalLink, Users, LinkIcon } from "lucide-react"
 import { Profile } from "@/lib/types"
+import Link from "next/link"
+import { useSearch } from "@/context/SearchContext"
 
-interface Candidate {
-  id: string
-  name: string
-  title: string
-  summary: string
-  alignment: string
-  proofs: Array<{
-    type: "github" | "twitter" | "linkedin"
-    content: string
-    url: string
-  }>
-  matchScore: number
-  isPremium?: boolean
+// This will now be the single source of truth for a candidate's shape.
+interface Candidate extends Profile {
+  // We can add any additional frontend-only fields here if needed later.
 }
 
 export default function SearchPage() {
   const [searchQuery, setSearchQuery] = useState("")
-  const [candidates, setCandidates] = useState<Candidate[]>([])
+  const { candidates, setCandidates } = useSearch()
   const [isSearching, setIsSearching] = useState(false)
   const [activeTab, setActiveTab] = useState("search")
   const [profileUrl, setProfileUrl] = useState("")
   const [error, setError] = useState<string | null>(null)
 
-  // Load saved state from localStorage on component mount
-  useEffect(() => {
-    try {
-      const savedQuery = localStorage.getItem('churros_search_query')
-      const savedCandidates = localStorage.getItem('churros_candidates')
-      const savedTab = localStorage.getItem('churros_active_tab')
-      
-      if (savedQuery) {
-        setSearchQuery(savedQuery)
-      }
-      if (savedCandidates) {
-        setCandidates(JSON.parse(savedCandidates))
-      }
-      if (savedTab) {
-        setActiveTab(savedTab)
-      }
-    } catch (error) {
-      console.error('Error loading saved state:', error)
-    }
-  }, [])
-
-  // Save state to localStorage whenever it changes
-  useEffect(() => {
-    try {
-      localStorage.setItem('churros_search_query', searchQuery)
-      localStorage.setItem('churros_candidates', JSON.stringify(candidates))
-      localStorage.setItem('churros_active_tab', activeTab)
-    } catch (error) {
-      console.error('Error saving state:', error)
-    }
-  }, [searchQuery, candidates, activeTab])
-
-  // Convert Profile to Candidate format for backward compatibility
+  // No longer needed, as the Profile type from the API now matches the Candidate shape
   const convertProfileToCandidate = (profile: Profile): Candidate => {
-    return {
-      id: profile.id,
-      name: profile.name,
-      title: `${profile.platform} ${profile.platform === 'github' ? 'Developer' : 'User'}`,
-      summary: profile.bio || `Active ${profile.platform} user`,
-      alignment: profile.fit_summary || `Good match based on ${profile.platform} activity`,
-      proofs: [
-        {
-          type: profile.platform as "github" | "twitter" | "linkedin",
-          content: `Active on ${profile.platform}`,
-          url: profile.profile_url || "#"
-        }
-      ],
-      matchScore: Math.round(profile.score * 100),
-      isPremium: profile.score > 0.8
-    }
+    return profile
   }
 
   const handleSearch = async () => {
@@ -89,14 +34,6 @@ export default function SearchPage() {
 
     setIsSearching(true)
     setError(null)
-    setCandidates([]) // Clear previous results
-
-    // Clear localStorage for new search
-    try {
-      localStorage.removeItem('churros_candidates')
-    } catch (error) {
-      console.error('Error clearing localStorage:', error)
-    }
 
     try {
       const response = await fetch('/api/generate-leads', {
@@ -134,29 +71,11 @@ export default function SearchPage() {
     }
   }
 
-  // Function to clear all saved state
-  const clearSavedState = () => {
-    try {
-      localStorage.removeItem('churros_search_query')
-      localStorage.removeItem('churros_candidates')
-      localStorage.removeItem('churros_active_tab')
-    } catch (error) {
-      console.error('Error clearing saved state:', error)
-    }
-  }
-
   const handleTrackProfile = async () => {
     if (!profileUrl.trim()) return
 
     setIsSearching(true)
     setError(null)
-
-    // Clear localStorage for new profile tracking
-    try {
-      localStorage.removeItem('churros_candidates')
-    } catch (error) {
-      console.error('Error clearing localStorage:', error)
-    }
 
     try {
       // Extract username from URL
@@ -248,6 +167,17 @@ export default function SearchPage() {
       default:
         return <ExternalLink className="w-4 h-4" />
     }
+  }
+
+  const handleSelectCandidate = (candidate: Candidate) => {
+    localStorage.setItem('selected_candidate', JSON.stringify(candidate))
+    // Note: The Link component will handle the navigation
+  }
+
+  // Function to clear all saved state
+  const clearSavedState = () => {
+    setCandidates([])
+    setSearchQuery("")
   }
 
   return (
@@ -383,11 +313,7 @@ export default function SearchPage() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => {
-                      setCandidates([])
-                      setSearchQuery("")
-                      clearSavedState()
-                    }}
+                    onClick={clearSavedState}
                     className="text-gray-600 hover:text-gray-800"
                   >
                     Clear Results
@@ -397,71 +323,68 @@ export default function SearchPage() {
 
               <div className="grid gap-6">
                 {candidates.map((candidate, index) => (
-                  <Card
-                    key={candidate.id}
-                    className="bg-white shadow-lg rounded-xl border-0 hover:shadow-xl transition-all duration-300 animate-in slide-in-from-bottom-4"
-                    style={{ animationDelay: `${index * 100}ms` }}
-                  >
-                    <CardContent className="p-6">
-                      <div className="flex items-start justify-between mb-4">
-                        <div className="flex-1">
-                          <div className="flex items-center space-x-3 mb-2">
-                            <h3 className="text-xl font-bold text-[#242424]">{candidate.name}</h3>
-                            <Badge variant="secondary" className="bg-[#E0531F]/10 text-[#E0531F] font-medium">
-                              {candidate.matchScore}% match
-                            </Badge>
-                            {candidate.isPremium && (
-                              <Badge className="bg-gradient-to-r from-orange-400 to-orange-600 text-white text-xs">
-                                Premium
+                  <Link href={`/candidate/${candidate.id}`} key={candidate.id} onClick={() => handleSelectCandidate(candidate)}>
+                    <Card
+                      className="bg-white shadow-lg rounded-xl border-0 hover:shadow-xl transition-all duration-300 animate-in slide-in-from-bottom-4"
+                      style={{ animationDelay: `${index * 100}ms` }}
+                    >
+                      <CardContent className="p-6">
+                        <div className="flex items-start justify-between mb-4">
+                          <div className="flex-1">
+                            <div className="flex items-center space-x-3 mb-2">
+                              <h3 className="text-xl font-bold text-[#242424]">{candidate.name}</h3>
+                              <Badge variant="secondary" className="bg-[#E0531F]/10 text-[#E0531F] font-medium">
+                                {Math.round(candidate.score * 100)}% match
                               </Badge>
-                            )}
+                            </div>
+                            <p className="text-[#242424] opacity-80 mb-3">{candidate.bio}</p>
                           </div>
-                          <p className="text-[#242424] opacity-70 font-medium mb-1">{candidate.title}</p>
-                          <p className="text-[#242424] opacity-80 mb-3">{candidate.summary}</p>
                         </div>
-                      </div>
 
-                      <div className="bg-[#E0531F]/5 rounded-lg p-4 mb-4">
-                        <h4 className="font-medium text-[#242424] mb-2">Why they're a fit:</h4>
-                        <p className="text-[#242424] opacity-80 italic">{candidate.alignment}</p>
-                      </div>
+                        <div className="bg-[#E0531F]/5 rounded-lg p-4 mb-4">
+                          <h4 className="font-medium text-[#242424] mb-2">Why they're a fit:</h4>
+                          <p className="text-[#242424] opacity-80 italic">{candidate.fit_summary}</p>
+                        </div>
 
-                      <div className="space-y-3 mb-4">
-                        <h4 className="font-medium text-[#242424]">Social proof:</h4>
-                        {candidate.proofs.map((proof, proofIndex) => (
-                          <div key={proofIndex} className="flex items-center space-x-3 text-sm">
-                            {getProofIcon(proof.type)}
-                            <span className="text-[#242424] opacity-80">{proof.content}</span>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-auto p-0 text-[#E0531F] hover:text-[#E0531F]/80"
-                              onClick={() => window.open(proof.url, '_blank')}
-                            >
-                              <ExternalLink className="w-3 h-3" />
-                            </Button>
-                          </div>
-                        ))}
-                      </div>
+                        <div className="space-y-3 mb-4">
+                          <h4 className="font-medium text-[#242424]">Social proof:</h4>
+                          {candidate.profile_url && (
+                            <div className="flex items-center space-x-3 text-sm">
+                              {getProofIcon(candidate.platform)}
+                              <span className="text-[#242424] opacity-80">{`View on ${candidate.platform}`}</span>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-auto p-0 text-[#E0531F] hover:text-[#E0531F]/80"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  window.open(candidate.profile_url || '', '_blank')
+                                }}
+                              >
+                                <ExternalLink className="w-3 h-3" />
+                              </Button>
+                            </div>
+                          )}
+                        </div>
 
-                      <div className="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-3">
-                        <Button
-                          className="bg-[#E0531F] hover:bg-[#E0531F]/90 text-white font-medium"
-                          onClick={() => (window.location.href = `/candidate/${candidate.id}`)}
-                        >
-                          See Full Details
-                        </Button>
-                        {candidate.isPremium && (
+                        <div className="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-3">
                           <Button
-                            variant="outline"
-                            className="border-[#E0531F] text-[#E0531F] hover:bg-[#E0531F] hover:text-white"
+                            className="bg-[#E0531F] hover:bg-[#E0531F]/90 text-white font-medium"
                           >
-                            We'll reach out for you
+                            See Full Details
                           </Button>
-                        )}
-                      </div>
-                    </CardContent>
-                  </Card>
+                          {candidate.isPremium && (
+                            <Button
+                              variant="outline"
+                              className="border-[#E0531F] text-[#E0531F] hover:bg-[#E0531F] hover:text-white"
+                            >
+                              We'll reach out for you
+                            </Button>
+                          )}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </Link>
                 ))}
               </div>
             </div>
