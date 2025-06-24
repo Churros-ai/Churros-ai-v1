@@ -5,10 +5,25 @@ import * as playwright from 'playwright-core';
 import { Profile, PlatformType } from '@/lib/types';
 import { randomUUID } from 'crypto';
 
+// Runtime configuration for production
+export const runtime = 'nodejs';
+export const maxDuration = 60; // 60 seconds for scraping operations
+
+// CORS headers for production
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+};
+
 // Initialize Supabase client
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const supabase = createClient(supabaseUrl, supabaseKey);
+
+export async function OPTIONS() {
+  return new NextResponse(null, { headers: corsHeaders });
+}
 
 export async function POST(request: NextRequest) {
   // Comprehensive environment variable check
@@ -22,7 +37,7 @@ export async function POST(request: NextRequest) {
     const { query, platform = 'github', limit = 10 } = await request.json();
 
     if (!query) {
-      return NextResponse.json({ error: 'Query is required' }, { status: 400 });
+      return NextResponse.json({ error: 'Query is required' }, { status: 400, headers: corsHeaders });
     }
 
     console.log(`On-demand scraping for: ${query} on ${platform}`);
@@ -34,7 +49,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         profiles: [],
         message: 'No profiles found for the given query'
-      });
+      }, { headers: corsHeaders });
     }
 
     // Analyze profiles with AI
@@ -43,7 +58,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       profiles: analyzedProfiles,
       count: analyzedProfiles.length
-    });
+    }, { headers: corsHeaders });
 
   } catch (error) {
     console.error('[CRITICAL] ON-DEMAND SCRAPE FAILED:', JSON.stringify(error, null, 2));
@@ -58,13 +73,13 @@ export async function POST(request: NextRequest) {
         error: 'GitHub authentication failed',
         details: `GitHub token status: ${githubTokenStatus}. ${errorMessage}`,
         solution: 'Please check your GitHub token in Vercel environment variables'
-      }, { status: 401 });
+      }, { status: 401, headers: corsHeaders });
     }
     
     return NextResponse.json({
       error: 'Failed to scrape profiles',
       details: errorMessage
-    }, { status: 500 });
+    }, { status: 500, headers: corsHeaders });
   }
 }
 
@@ -111,8 +126,20 @@ async function scrapeProfiles(
     await page.setViewportSize({ width: 1920, height: 1080 });
 
     if (platform === 'github') {
-      const githubProfiles = await scrapeGitHubProfiles(page, query, limit);
-      profiles.push(...githubProfiles);
+      // First, try to get profiles from public repositories
+      console.log('[DEBUG] Starting repository-based profile discovery...');
+      const repoProfiles = await scrapeGitHubFromRepos(query, Math.floor(limit / 2));
+      profiles.push(...repoProfiles);
+      console.log(`[DEBUG] Found ${repoProfiles.length} profiles from repositories`);
+
+      // Then, get profiles from user search to fill the remaining slots
+      const remainingLimit = limit - profiles.length;
+      if (remainingLimit > 0) {
+        console.log(`[DEBUG] Getting ${remainingLimit} more profiles from user search...`);
+        const userProfiles = await scrapeGitHubProfiles(page, query, remainingLimit);
+        profiles.push(...userProfiles);
+        console.log(`[DEBUG] Found ${userProfiles.length} profiles from user search`);
+      }
     } else if (platform === 'twitter') {
       const twitterProfiles = await scrapeTwitterProfiles(page, query, limit);
       profiles.push(...twitterProfiles);
@@ -602,4 +629,112 @@ function parseGitHubQuery(prompt: string): { searchQuery: string, filters: strin
     console.log("[DEBUG] Final GitHub query:", result);
 
     return result;
+}
+
+/**
+ * Scrape GitHub profiles from public repositories
+ */
+async function scrapeGitHubFromRepos(query: string, limit: number): Promise<Profile[]> {
+  const profiles: Profile[] = [];
+  const githubToken = process.env.GITHUB_TOKEN;
+
+  console.log(`[DEBUG] GitHub Repo API - Token present: ${githubToken ? 'YES' : 'NO'}`);
+  if (!githubToken) {
+    console.error('[DEBUG] GitHub API - No token available, cannot make API calls');
+    return [];
+  }
+
+  try {
+    // First, search for repositories that match the query
+    const repoSearchUrl = `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}&sort=stars&order=desc&per_page=10`;
+    console.log(`[DEBUG] Searching repositories: ${repoSearchUrl}`);
+
+    const repoResponse = await fetch(repoSearchUrl, {
+      headers: {
+        Authorization: `token ${githubToken}`,
+        'User-Agent': 'ChurrosAI/1.0',
+      },
+    });
+
+    if (!repoResponse.ok) {
+      console.error(`[DEBUG] GitHub Repo API error: ${repoResponse.status} ${repoResponse.statusText}`);
+      return [];
+    }
+
+    const repoData = await repoResponse.json();
+    console.log(`[DEBUG] Found ${repoData.items.length} repositories`);
+
+    // For each repository, get contributors
+    for (const repo of repoData.items.slice(0, 5)) { // Limit to top 5 repos
+      if (profiles.length >= limit) break;
+
+      console.log(`[DEBUG] Getting contributors for repo: ${repo.full_name}`);
+      
+      const contributorsUrl = `https://api.github.com/repos/${repo.full_name}/contributors?per_page=10`;
+      const contributorsResponse = await fetch(contributorsUrl, {
+        headers: {
+          Authorization: `token ${githubToken}`,
+          'User-Agent': 'ChurrosAI/1.0',
+        },
+      });
+
+      if (!contributorsResponse.ok) {
+        console.log(`[DEBUG] Could not fetch contributors for ${repo.full_name}: ${contributorsResponse.status}`);
+        continue;
+      }
+
+      const contributors = await contributorsResponse.json();
+      console.log(`[DEBUG] Found ${contributors.length} contributors for ${repo.full_name}`);
+
+      // Get detailed profile for each contributor
+      for (const contributor of contributors) {
+        if (profiles.length >= limit) break;
+
+        // Skip if we already have this profile
+        if (profiles.some(p => p.name === contributor.login)) continue;
+
+        try {
+          const userResponse = await fetch(contributor.url, {
+            headers: {
+              Authorization: `token ${githubToken}`,
+              'User-Agent': 'ChurrosAI/1.0',
+            },
+          });
+
+          if (!userResponse.ok) continue;
+
+          const user = await userResponse.json();
+          console.log(`[DEBUG] Added repo contributor: ${user.login} from ${repo.full_name}`);
+
+          const tags = extractTags(user.bio || '' + ' ' + user.login + ' ' + (user.name || '') + ' ' + repo.name);
+
+          profiles.push({
+            id: randomUUID(),
+            name: user.name || user.login,
+            bio: user.bio || `Contributor to ${repo.full_name}`,
+            platform: 'github',
+            tags: tags,
+            score: 0.8,
+            last_updated: new Date().toISOString(),
+            fit_summary: null,
+            profile_url: user.html_url,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            avatar_url: user.avatar_url,
+            followers: user.followers,
+            following: user.following,
+            location: user.location,
+            public_repos: user.public_repos,
+          });
+        } catch (error) {
+          console.error(`[DEBUG] Error fetching user ${contributor.login}:`, error);
+          continue;
+        }
+      }
+    }
+  } catch (error) {
+    console.error('[DEBUG] Error fetching from GitHub Repo API:', error);
+  }
+
+  return profiles;
 }

@@ -3,17 +3,41 @@ import { createClient } from '@supabase/supabase-js';
 import { ProfileMatcher, MatchScore } from '../../../lib/matcher';
 import { LeadGenerationRequest, LeadGenerationResponse, Profile } from '../../../lib/types';
 
+// Runtime configuration for production
+export const runtime = 'nodejs';
+export const maxDuration = 60; // 60 seconds for scraping operations
+
 // Initialize Supabase client
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
+// CORS headers for production
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+};
+
+export async function OPTIONS() {
+  return new NextResponse(null, { headers: corsHeaders });
+}
+
 export async function POST(request: NextRequest) {
   try {
+    // Add CORS headers
+    const response = NextResponse.next();
+    Object.entries(corsHeaders).forEach(([key, value]) => {
+      response.headers.set(key, value);
+    });
+
     const { companyDNA, platform, limit = 10 } = await request.json();
 
     if (!companyDNA) {
-      return NextResponse.json({ error: 'Company DNA is required' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'Company DNA is required' }, 
+        { status: 400, headers: corsHeaders }
+      );
     }
 
     console.log('Generating leads for:', companyDNA);
@@ -25,14 +49,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       leads: scrapedLeads,
       source: 'scraped'
-    });
+    }, { headers: corsHeaders });
 
   } catch (error) {
     console.error('Error generating leads:', error);
     return NextResponse.json({ 
       error: 'Failed to generate leads',
       details: error instanceof Error ? error.message : 'Unknown error'
-    }, { status: 500 });
+    }, { status: 500, headers: corsHeaders });
   }
 }
 
@@ -45,10 +69,16 @@ async function triggerOnDemandScraping(
   limit: number = 10
 ): Promise<Profile[]> {
   try {
+    // Use absolute URL for production
     const baseUrl = process.env.VERCEL_URL
       ? `https://${process.env.VERCEL_URL}`
+      : process.env.NEXT_PUBLIC_VERCEL_URL
+      ? `https://${process.env.NEXT_PUBLIC_VERCEL_URL}`
       : 'http://localhost:3000';
+    
     const scrapingUrl = `${baseUrl}/api/on-demand-scrape`;
+    
+    console.log('Calling scraping URL:', scrapingUrl);
     
     const response = await fetch(scrapingUrl, {
       method: 'POST',
@@ -64,6 +94,8 @@ async function triggerOnDemandScraping(
 
     if (!response.ok) {
       console.error('On-demand scraping failed:', response.statusText);
+      const errorText = await response.text();
+      console.error('Error details:', errorText);
       return [];
     }
 
@@ -88,7 +120,7 @@ export async function GET(request: NextRequest) {
   if (!companyDNA) {
     return NextResponse.json(
       { error: 'companyDNA query parameter is required' },
-      { status: 400 }
+      { status: 400, headers: corsHeaders }
     );
   }
 
